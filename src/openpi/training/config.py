@@ -96,6 +96,8 @@ class DataConfig:
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
     # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
     datasets: Sequence[droid_rlds_dataset.RLDSDataset] = ()
+    # Shuffle buffer size for RLDS data loader. Reduce if running out of memory.
+    shuffle_buffer_size: int = droid_rlds_dataset.DEFAULT_SHUFFLE_BUFFER_SIZE
 
 
 class GroupFactory(Protocol):
@@ -363,6 +365,8 @@ class RLDSDroidDataConfig(DataConfigFactory):
 
     rlds_data_dir: str | None = None
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
+    # Shuffle buffer size. Reduce if running out of memory (but below ~100k shuffling is not sufficiently random).
+    shuffle_buffer_size: int = droid_rlds_dataset.DEFAULT_SHUFFLE_BUFFER_SIZE
 
     # Filtering options. Can pass a path to a dictionary that maps episodes to timestep ranges
     # to tuples denoting ranges of time steps to keep (start, end). Episodes are uniquely identified with
@@ -420,6 +424,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
             rlds_data_dir=self.rlds_data_dir,
             action_space=self.action_space,
             datasets=self.datasets,
+            shuffle_buffer_size=self.shuffle_buffer_size,
         )
 
 
