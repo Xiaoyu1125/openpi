@@ -167,6 +167,7 @@ def create_rlds_dataset(
         action_space=data_config.action_space,
         datasets=data_config.datasets,
         shuffle_buffer_size=data_config.shuffle_buffer_size,
+        episode_aware_sampling=data_config.episode_aware_sampling,
     )
 
 
