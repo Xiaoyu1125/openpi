@@ -229,6 +229,8 @@ class DroidRldsDataset:
         weights = [dataset.weight for dataset in datasets]
 
         final_dataset = dl.DLataset.sample_from_datasets(all_datasets, weights=weights)
+        # Randomly drop 50% of frames before shuffling to increase randomness
+        final_dataset = final_dataset.filter(lambda _: tf.random.uniform(shape=[]) > 0.5)
         final_dataset = final_dataset.shuffle(shuffle_buffer_size)
         final_dataset = final_dataset.batch(batch_size)
         # Note =>> Seems to reduce memory usage without affecting speed?
