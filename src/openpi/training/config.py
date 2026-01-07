@@ -99,7 +99,7 @@ class DataConfig:
     # Shuffle buffer size for RLDS data loader. Reduce if running out of memory.
     shuffle_buffer_size: int = droid_rlds_dataset.DEFAULT_SHUFFLE_BUFFER_SIZE
     # If true, use per-episode probability decay for better shuffle diversity.
-    episode_aware_sampling: bool = False
+    prefilter: bool = False
 
 
 class GroupFactory(Protocol):
@@ -370,7 +370,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
     # Shuffle buffer size. Reduce if running out of memory (but below ~100k shuffling is not sufficiently random).
     shuffle_buffer_size: int = droid_rlds_dataset.DEFAULT_SHUFFLE_BUFFER_SIZE
     # If true, use per-episode probability decay for better shuffle diversity.
-    episode_aware_sampling: bool = False
+    prefilter: bool = False
 
     # Filtering options. Can pass a path to a dictionary that maps episodes to timestep ranges
     # to tuples denoting ranges of time steps to keep (start, end). Episodes are uniquely identified with
@@ -429,7 +429,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
             action_space=self.action_space,
             datasets=self.datasets,
             shuffle_buffer_size=self.shuffle_buffer_size,
-            episode_aware_sampling=self.episode_aware_sampling,
+            prefilter=self.prefilter,
         )
 
 
