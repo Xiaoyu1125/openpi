@@ -191,6 +191,31 @@ def train_step(
     return new_state, info
 
 
+@at.typecheck
+def val_step(
+    config: _config.TrainConfig,
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    batch: tuple[_model.Observation, _model.Actions],
+) -> dict[str, at.Array]:
+    """Compute validation loss without updating model parameters."""
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
+
+    @at.typecheck
+    def loss_fn(
+        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
+    ):
+        chunked_loss = model.compute_loss(rng, observation, actions, train=False)
+        return jnp.mean(chunked_loss)
+
+    val_rng = jax.random.fold_in(rng, state.step)
+    observation, actions = batch
+    loss = loss_fn(model, val_rng, observation, actions)
+
+    return {"val_loss": loss}
+
+
 def main(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
@@ -247,6 +272,12 @@ def main(config: _config.TrainConfig):
         donate_argnums=(1,),
     )
 
+    pval_step = jax.jit(
+        functools.partial(val_step, config),
+        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+        out_shardings=replicated_sharding,
+    ) if (config.val_interval and config.val_interval > 0) else None
+
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
@@ -254,6 +285,17 @@ def main(config: _config.TrainConfig):
         total=config.num_train_steps,
         dynamic_ncols=True,
     )
+
+    # Create validation data loader if validation is enabled
+    val_data_loader = None
+    val_data_iter = None
+    if pval_step is not None:
+        val_data_loader = _data_loader.create_data_loader(
+            config,
+            sharding=data_sharding,
+            shuffle=False,  # Don't shuffle validation data
+        )
+        val_data_iter = iter(val_data_loader)
 
     infos = []
     for step in pbar:
@@ -267,6 +309,27 @@ def main(config: _config.TrainConfig):
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
             infos = []
+
+        # Compute validation loss if validation is enabled
+        if pval_step is not None and step % config.val_interval == 0:
+            val_losses = []
+            for _ in range(config.num_val_batches):
+                try:
+                    val_batch = next(val_data_iter)
+                except StopIteration:
+                    # Reset iterator if we reach the end
+                    val_data_iter = iter(val_data_loader)
+                    val_batch = next(val_data_iter)
+
+                with sharding.set_mesh(mesh):
+                    val_info = pval_step(train_rng, train_state, val_batch)
+                val_losses.append(val_info)
+
+            stacked_val_losses = common_utils.stack_forest(val_losses)
+            mean_val_loss = jax.device_get(jax.tree.map(jnp.mean, stacked_val_losses))
+            pbar.write(f"Step {step}: val_loss={mean_val_loss['val_loss']:.4f}")
+            wandb.log(mean_val_loss, step=step)
+
         batch = next(data_iter)
 
         # if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:

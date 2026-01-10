@@ -544,6 +544,11 @@ class TrainConfig:
     # data parallel between 2 groups of devices.
     fsdp_devices: int = 1
 
+    # How often (in steps) to compute validation loss. If None or 0, validation will be disabled.
+    val_interval: int | None = None
+    # Number of validation batches to use for computing validation loss.
+    num_val_batches: int = 10
+
     @property
     def assets_dirs(self) -> pathlib.Path:
         """Get the assets directory for this config."""
