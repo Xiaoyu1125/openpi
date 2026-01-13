@@ -302,6 +302,7 @@ def main(config: _config.TrainConfig):
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
         infos.append(info)
+        
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
@@ -312,12 +313,14 @@ def main(config: _config.TrainConfig):
 
         # Compute validation loss if validation is enabled
         if pval_step is not None and step % config.val_interval == 0:
+            logging.info(f"Computing validation at step {step}")
             val_losses = []
-            for _ in range(config.num_val_batches):
+            for val_idx in range(config.num_val_batches):
                 try:
                     val_batch = next(val_data_iter)
                 except StopIteration:
                     # Reset iterator if we reach the end
+                    logging.info(f"Validation iterator exhausted at batch {val_idx}, restarting")
                     val_data_iter = iter(val_data_loader)
                     val_batch = next(val_data_iter)
 
@@ -329,13 +332,18 @@ def main(config: _config.TrainConfig):
             mean_val_loss = jax.device_get(jax.tree.map(jnp.mean, stacked_val_losses))
             pbar.write(f"Step {step}: val_loss={mean_val_loss['val_loss']:.4f}")
             wandb.log(mean_val_loss, step=step)
+            logging.info(f"Validation completed at step {step}")
 
+        # Fetch next batch for training
+        logging.debug(f"Fetching batch for step {step}")
         try:
             batch = next(data_iter)
         except StopIteration:
             # Reset the data iterator if we reach the end of the dataset
+            logging.info("Data loader reached end, restarting from beginning")
             data_iter = iter(data_loader)
             batch = next(data_iter)
+        logging.debug(f"Batch fetched for step {step}")
 
         # if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
         #     _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
