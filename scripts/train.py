@@ -191,7 +191,6 @@ def train_step(
     return new_state, info
 
 
-@at.typecheck
 def val_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
@@ -286,16 +285,8 @@ def main(config: _config.TrainConfig):
         dynamic_ncols=True,
     )
 
-    # Create validation data loader if validation is enabled
-    val_data_loader = None
-    val_data_iter = None
-    if pval_step is not None:
-        val_data_loader = _data_loader.create_data_loader(
-            config,
-            sharding=data_sharding,
-            shuffle=False,  # Don't shuffle validation data
-        )
-        val_data_iter = iter(val_data_loader)
+    # Validation will reuse the training data iterator
+    # This avoids creating multiple iterators that may conflict
 
     infos = []
     for step in pbar:
@@ -315,14 +306,14 @@ def main(config: _config.TrainConfig):
         if pval_step is not None and step % config.val_interval == 0:
             logging.info(f"Computing validation at step {step}")
             val_losses = []
+            # Use the same data iterator for validation
             for val_idx in range(config.num_val_batches):
                 try:
-                    val_batch = next(val_data_iter)
+                    val_batch = next(data_iter)
                 except StopIteration:
-                    # Reset iterator if we reach the end
-                    logging.info(f"Validation iterator exhausted at batch {val_idx}, restarting")
-                    val_data_iter = iter(val_data_loader)
-                    val_batch = next(val_data_iter)
+                    logging.info(f"Data iterator exhausted during validation, restarting")
+                    data_iter = iter(data_loader)
+                    val_batch = next(data_iter)
 
                 with sharding.set_mesh(mesh):
                     val_info = pval_step(train_rng, train_state, val_batch)
@@ -332,18 +323,14 @@ def main(config: _config.TrainConfig):
             mean_val_loss = jax.device_get(jax.tree.map(jnp.mean, stacked_val_losses))
             pbar.write(f"Step {step}: val_loss={mean_val_loss['val_loss']:.4f}")
             wandb.log(mean_val_loss, step=step)
-            logging.info(f"Validation completed at step {step}")
 
         # Fetch next batch for training
-        logging.debug(f"Fetching batch for step {step}")
         try:
             batch = next(data_iter)
         except StopIteration:
-            # Reset the data iterator if we reach the end of the dataset
             logging.info("Data loader reached end, restarting from beginning")
             data_iter = iter(data_loader)
             batch = next(data_iter)
-        logging.debug(f"Batch fetched for step {step}")
 
         # if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
         #     _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
