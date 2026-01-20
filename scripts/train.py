@@ -241,6 +241,7 @@ def main(config: _config.TrainConfig):
     )
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
+    # Create training data loader
     data_loader = _data_loader.create_data_loader(
         config,
         sharding=data_sharding,
@@ -249,6 +250,24 @@ def main(config: _config.TrainConfig):
     data_iter = iter(data_loader)
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
+
+    # Create validation data loader (fixed, no shuffle, deterministic)
+    val_batches = []
+    if config.val_interval and config.val_interval > 0:
+        logging.info("Creating validation data loader")
+        val_data_loader = _data_loader.create_data_loader(
+            config,
+            sharding=data_sharding,
+            shuffle=False,  # No shuffle for validation
+            num_batches=config.num_val_batches,
+        )
+        try:
+            for i in range(config.num_val_batches):
+                val_batch = next(iter(val_data_loader))
+                val_batches.append(val_batch)
+        except StopIteration:
+            logging.warning(f"Could only load {len(val_batches)} validation batches out of {config.num_val_batches}")
+        logging.info(f"Preloaded {len(val_batches)} validation batches")
 
     # Log images from first batch to sanity check.
     images_to_log = [
@@ -285,9 +304,6 @@ def main(config: _config.TrainConfig):
         dynamic_ncols=True,
     )
 
-    # Validation will reuse the training data iterator
-    # This avoids creating multiple iterators that may conflict
-
     infos = []
     for step in pbar:
         with sharding.set_mesh(mesh):
@@ -302,21 +318,15 @@ def main(config: _config.TrainConfig):
             wandb.log(reduced_info, step=step)
             infos = []
 
-        # Compute validation loss if validation is enabled
-        if pval_step is not None and step % config.val_interval == 0:
+        # Compute validation loss using preloaded validation batches
+        if pval_step is not None and len(val_batches) > 0 and step % config.val_interval == 0:
             logging.info(f"Computing validation at step {step}")
             val_losses = []
-            # Use the same data iterator for validation
-            for val_idx in range(config.num_val_batches):
-                try:
-                    val_batch = next(data_iter)
-                except StopIteration:
-                    logging.info(f"Data iterator exhausted during validation, restarting")
-                    data_iter = iter(data_loader)
-                    val_batch = next(data_iter)
-
+            # Use preloaded validation batches for reproducibility
+            val_rng = jax.random.key(config.seed + 1000)  # Fixed RNG for validation
+            for val_batch in val_batches:
                 with sharding.set_mesh(mesh):
-                    val_info = pval_step(train_rng, train_state, val_batch)
+                    val_info = pval_step(val_rng, train_state, val_batch)
                 val_losses.append(val_info)
 
             stacked_val_losses = common_utils.stack_forest(val_losses)
