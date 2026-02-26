@@ -32,6 +32,8 @@ class RLDSDataset:
     version: str
     weight: float
     filter_dict_path: str | None = None
+    # TFDS split string, supports percentage slicing e.g. "train[:95%]" or "train[95%:]"
+    split: str = "train"
 
 
 class DroidRldsDataset:
@@ -67,7 +69,7 @@ class DroidRldsDataset:
             ds_name, version = dataset_cfg.name, dataset_cfg.version
             builder = tfds.builder(ds_name, data_dir=data_dir, version=version)
             dataset = dl.DLataset.from_rlds(
-                builder, split="train", shuffle=shuffle, num_parallel_reads=num_parallel_reads
+                builder, split=dataset_cfg.split, shuffle=shuffle, num_parallel_reads=num_parallel_reads
             )
 
             # Filter out any unsuccessful trajectories -- we use the file name to check this

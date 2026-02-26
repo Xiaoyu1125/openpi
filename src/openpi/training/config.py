@@ -548,6 +548,9 @@ class TrainConfig:
     val_interval: int | None = None
     # Number of validation batches to use for computing validation loss.
     num_val_batches: int = 10
+    # Optional separate data config for validation. If set, validation batches are drawn from this
+    # dataset instead of the training dataset, enabling a proper held-out validation split.
+    val_data: tyro.conf.Suppress[DataConfigFactory | None] = None
 
     @property
     def assets_dirs(self) -> pathlib.Path:
@@ -856,9 +859,37 @@ _CONFIGS = [
         data=RLDSDroidDataConfig(
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
-            rlds_data_dir="/data/droid",
+            rlds_data_dir="/public/xiaoyu/",
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
+            # Reserve the last 5% of DROID episodes as a held-out validation split.
+            datasets=(
+                droid_rlds_dataset.RLDSDataset(
+                    name="droid",
+                    version="1.0.1",
+                    weight=1.0,
+                    filter_dict_path="gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json",
+                    split="train[:95%]",
+                ),
+            ),
         ),
+        val_data=RLDSDroidDataConfig(
+            repo_id="droid",
+            rlds_data_dir="/public/xiaoyu/",
+            action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
+            # Held-out 5% of DROID episodes for validation (no frame-level filter needed).
+            datasets=(
+                droid_rlds_dataset.RLDSDataset(
+                    name="droid",
+                    version="1.0.1",
+                    weight=1.0,
+                    split="train[95%:]",
+                ),
+            ),
+            # Small shuffle buffer for validation to limit memory overhead.
+            shuffle_buffer_size=1_000,
+        ),
+        val_interval=1_000,
+        num_val_batches=10,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,
@@ -886,13 +917,45 @@ _CONFIGS = [
         data=RLDSDroidDataConfig(
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
-            rlds_data_dir="/data",
+            rlds_data_dir="/public/xiaoyu/",
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
             assets=AssetsConfig(
                 assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets/",
                 asset_id="droid",
             ),
+            # Reserve the last 5% of DROID episodes as a held-out validation split.
+            datasets=(
+                droid_rlds_dataset.RLDSDataset(
+                    name="droid",
+                    version="1.0.1",
+                    weight=1.0,
+                    filter_dict_path="gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json",
+                    split="train[:95%]",
+                ),
+            ),
         ),
+        val_data=RLDSDroidDataConfig(
+            repo_id="droid",
+            rlds_data_dir="/public/xiaoyu/",
+            action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets/",
+                asset_id="droid",
+            ),
+            # Held-out 5% of DROID episodes for validation (no frame-level filter needed).
+            datasets=(
+                droid_rlds_dataset.RLDSDataset(
+                    name="droid",
+                    version="1.0.1",
+                    weight=1.0,
+                    split="train[95%:]",
+                ),
+            ),
+            # Small shuffle buffer for validation to limit memory overhead.
+            shuffle_buffer_size=1_000,
+        ),
+        val_interval=1_000,
+        num_val_batches=10,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,

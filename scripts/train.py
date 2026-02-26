@@ -254,20 +254,26 @@ def main(config: _config.TrainConfig):
     # Create validation data loader (fixed, no shuffle, deterministic)
     val_batches = []
     if config.val_interval and config.val_interval > 0:
-        logging.info("Creating validation data loader")
-        val_data_loader = _data_loader.create_data_loader(
-            config,
-            sharding=data_sharding,
-            shuffle=False,  # No shuffle for validation
-            num_batches=config.num_val_batches,
-        )
-        try:
-            for i in range(config.num_val_batches):
-                val_batch = next(iter(val_data_loader))
-                val_batches.append(val_batch)
-        except StopIteration:
-            logging.warning(f"Could only load {len(val_batches)} validation batches out of {config.num_val_batches}")
-        logging.info(f"Preloaded {len(val_batches)} validation batches")
+        if config.val_data is None:
+            logging.warning("val_interval is set but val_data is not configured; skipping validation.")
+        else:
+            logging.info("Creating validation data loader from val_data config")
+            # Swap in the dedicated validation data config so create_data_loader picks up
+            # the held-out DROID split instead of the training split.
+            val_config = dataclasses.replace(config, data=config.val_data)
+            val_data_loader = _data_loader.create_data_loader(
+                val_config,
+                sharding=data_sharding,
+                shuffle=False,  # No shuffle for validation
+                num_batches=config.num_val_batches,
+            )
+            try:
+                for i in range(config.num_val_batches):
+                    val_batch = next(iter(val_data_loader))
+                    val_batches.append(val_batch)
+            except StopIteration:
+                logging.warning(f"Could only load {len(val_batches)} validation batches out of {config.num_val_batches}")
+            logging.info(f"Preloaded {len(val_batches)} validation batches")
 
     # Log images from first batch to sanity check.
     images_to_log = [
@@ -294,7 +300,7 @@ def main(config: _config.TrainConfig):
         functools.partial(val_step, config),
         in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         out_shardings=replicated_sharding,
-    ) if (config.val_interval and config.val_interval > 0) else None
+    ) if (config.val_interval and config.val_interval > 0 and config.val_data is not None) else None
 
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
