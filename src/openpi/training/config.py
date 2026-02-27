@@ -23,6 +23,7 @@ import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
+import openpi.training.misc.polaris_config as polaris_config
 import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
@@ -93,8 +94,12 @@ class DataConfig:
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
-    # Path to the data filter file for DROID dataset
-    filter_dict_path: str | None = None
+    # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
+    datasets: Sequence[droid_rlds_dataset.RLDSDataset] = ()
+    # Shuffle buffer size for RLDS data loader. Reduce if running out of memory.
+    shuffle_buffer_size: int = droid_rlds_dataset.DEFAULT_SHUFFLE_BUFFER_SIZE
+    # If true, use per-episode probability decay for better shuffle diversity.
+    prefilter: bool = False
 
 
 class GroupFactory(Protocol):
@@ -362,12 +367,24 @@ class RLDSDroidDataConfig(DataConfigFactory):
 
     rlds_data_dir: str | None = None
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
+    # Shuffle buffer size. Reduce if running out of memory (but below ~100k shuffling is not sufficiently random).
+    shuffle_buffer_size: int = droid_rlds_dataset.DEFAULT_SHUFFLE_BUFFER_SIZE
+    # If true, use per-episode probability decay for better shuffle diversity.
+    prefilter: bool = False
 
     # Filtering options. Can pass a path to a dictionary that maps episodes to timestep ranges
     # to tuples denoting ranges of time steps to keep (start, end). Episodes are uniquely identified with
     # f"{recording_folderpath}--{file_path}", both of which are present in the RLDS episode metadata.
-    # Path to the filter dictionary file.
-    filter_dict_path: str | None = "gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json"
+
+    # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
+    datasets: Sequence[droid_rlds_dataset.RLDSDataset] = (
+        droid_rlds_dataset.RLDSDataset(
+            name="droid",
+            version="1.0.1",
+            weight=1.0,
+            filter_dict_path="gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json",
+        ),
+    )
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -410,7 +427,9 @@ class RLDSDroidDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
             rlds_data_dir=self.rlds_data_dir,
             action_space=self.action_space,
-            filter_dict_path=self.filter_dict_path,
+            datasets=self.datasets,
+            shuffle_buffer_size=self.shuffle_buffer_size,
+            prefilter=self.prefilter,
         )
 
 @dataclasses.dataclass(frozen=True)
@@ -577,6 +596,14 @@ class TrainConfig:
     # eg. if total device is 4 and fsdp devices is 2; then the model will shard to 2 devices and run
     # data parallel between 2 groups of devices.
     fsdp_devices: int = 1
+
+    # How often (in steps) to compute validation loss. If None or 0, validation will be disabled.
+    val_interval: int | None = None
+    # Number of validation batches to use for computing validation loss.
+    num_val_batches: int = 10
+    # Optional separate data config for validation. If set, validation batches are drawn from this
+    # dataset instead of the training dataset, enabling a proper held-out validation split.
+    val_data: tyro.conf.Suppress[DataConfigFactory | None] = None
 
     @property
     def assets_dirs(self) -> pathlib.Path:
@@ -809,7 +836,7 @@ _CONFIGS = [
     # Fine-tuning Aloha configs.
     #
     # This is a test config that is used to illustate how train on a custom LeRobot dataset.
-    # For instuctions on how to convert and train on your own Aloha dataset see examples/aloha_real/README.md
+    # For instructions on how to convert and train on your own Aloha dataset see examples/aloha_real/README.md
     TrainConfig(
         name="pi0_aloha_pen_uncap",
         model=pi0_config.Pi0Config(),
@@ -885,9 +912,37 @@ _CONFIGS = [
         data=RLDSDroidDataConfig(
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
-            rlds_data_dir="<path_to_droid_rlds_dataset>",
+            rlds_data_dir="/public/xiaoyu/",
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
+            # Reserve the last 5% of DROID episodes as a held-out validation split.
+            datasets=(
+                droid_rlds_dataset.RLDSDataset(
+                    name="droid",
+                    version="1.0.1",
+                    weight=1.0,
+                    filter_dict_path="gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json",
+                    split="train[:95%]",
+                ),
+            ),
         ),
+        val_data=RLDSDroidDataConfig(
+            repo_id="droid",
+            rlds_data_dir="/public/xiaoyu/",
+            action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
+            # Held-out 5% of DROID episodes for validation (no frame-level filter needed).
+            datasets=(
+                droid_rlds_dataset.RLDSDataset(
+                    name="droid",
+                    version="1.0.1",
+                    weight=1.0,
+                    split="train[95%:]",
+                ),
+            ),
+            # Small shuffle buffer for validation to limit memory overhead.
+            shuffle_buffer_size=1_000,
+        ),
+        val_interval=1_000,
+        num_val_batches=10,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,
@@ -915,12 +970,42 @@ _CONFIGS = [
         data=RLDSDroidDataConfig(
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
-            rlds_data_dir="/mnt/pi-data/kevin",
+            rlds_data_dir="/public/xiaoyu/",
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
             assets=AssetsConfig(
                 assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets/",
                 asset_id="droid",
             ),
+            # Reserve the last 5% of DROID episodes as a held-out validation split.
+            datasets=(
+                droid_rlds_dataset.RLDSDataset(
+                    name="droid",
+                    version="1.0.1",
+                    weight=1.0,
+                    filter_dict_path="gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json",
+                    split="train[:95%]",
+                ),
+            ),
+        ),
+        val_data=RLDSDroidDataConfig(
+            repo_id="droid",
+            rlds_data_dir="/public/xiaoyu/",
+            action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets/",
+                asset_id="droid",
+            ),
+            # Held-out 5% of DROID episodes for validation (no frame-level filter needed).
+            datasets=(
+                droid_rlds_dataset.RLDSDataset(
+                    name="droid",
+                    version="1.0.1",
+                    weight=1.0,
+                    split="train[95%:]",
+                ),
+            ),
+            # Small shuffle buffer for validation to limit memory overhead.
+            shuffle_buffer_size=1_000,
         ),
         # data=FlatDroidDataConfig(
         #     repo_id="droid",
@@ -931,6 +1016,8 @@ _CONFIGS = [
         #         asset_id="droid",
         #     ),
         # ),
+        val_interval=1_000,
+        num_val_batches=10,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,
@@ -1018,10 +1105,9 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
-    #
-    # RoboArena configs.
-    #
+    # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
+    *polaris_config.get_polaris_configs(),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

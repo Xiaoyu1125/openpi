@@ -191,6 +191,30 @@ def train_step(
     return new_state, info
 
 
+def val_step(
+    config: _config.TrainConfig,
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    batch: tuple[_model.Observation, _model.Actions],
+) -> dict[str, at.Array]:
+    """Compute validation loss without updating model parameters."""
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
+
+    @at.typecheck
+    def loss_fn(
+        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
+    ):
+        chunked_loss = model.compute_loss(rng, observation, actions, train=False)
+        return jnp.mean(chunked_loss)
+
+    val_rng = jax.random.fold_in(rng, state.step)
+    observation, actions = batch
+    loss = loss_fn(model, val_rng, observation, actions)
+
+    return {"val_loss": loss}
+
+
 def main(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
@@ -217,6 +241,7 @@ def main(config: _config.TrainConfig):
     )
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
+    # Create training data loader
     data_loader = _data_loader.create_data_loader(
         config,
         sharding=data_sharding,
@@ -225,6 +250,30 @@ def main(config: _config.TrainConfig):
     data_iter = iter(data_loader)
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
+
+    # Create validation data loader (fixed, no shuffle, deterministic)
+    val_batches = []
+    if config.val_interval and config.val_interval > 0:
+        if config.val_data is None:
+            logging.warning("val_interval is set but val_data is not configured; skipping validation.")
+        else:
+            logging.info("Creating validation data loader from val_data config")
+            # Swap in the dedicated validation data config so create_data_loader picks up
+            # the held-out DROID split instead of the training split.
+            val_config = dataclasses.replace(config, data=config.val_data)
+            val_data_loader = _data_loader.create_data_loader(
+                val_config,
+                sharding=data_sharding,
+                shuffle=False,  # No shuffle for validation
+                num_batches=config.num_val_batches,
+            )
+            try:
+                for i in range(config.num_val_batches):
+                    val_batch = next(iter(val_data_loader))
+                    val_batches.append(val_batch)
+            except StopIteration:
+                logging.warning(f"Could only load {len(val_batches)} validation batches out of {config.num_val_batches}")
+            logging.info(f"Preloaded {len(val_batches)} validation batches")
 
     # Log images from first batch to sanity check.
     images_to_log = [
@@ -247,6 +296,12 @@ def main(config: _config.TrainConfig):
         donate_argnums=(1,),
     )
 
+    pval_step = jax.jit(
+        functools.partial(val_step, config),
+        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+        out_shardings=replicated_sharding,
+    ) if (config.val_interval and config.val_interval > 0 and config.val_data is not None) else None
+
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
@@ -260,6 +315,7 @@ def main(config: _config.TrainConfig):
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
         infos.append(info)
+        
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
@@ -267,10 +323,33 @@ def main(config: _config.TrainConfig):
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
             infos = []
-        batch = next(data_iter)
 
-        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
-            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+        # Compute validation loss using preloaded validation batches
+        if pval_step is not None and len(val_batches) > 0 and step % config.val_interval == 0:
+            logging.info(f"Computing validation at step {step}")
+            val_losses = []
+            # Use preloaded validation batches for reproducibility
+            val_rng = jax.random.key(config.seed + 1000)  # Fixed RNG for validation
+            for val_batch in val_batches:
+                with sharding.set_mesh(mesh):
+                    val_info = pval_step(val_rng, train_state, val_batch)
+                val_losses.append(val_info)
+
+            stacked_val_losses = common_utils.stack_forest(val_losses)
+            mean_val_loss = jax.device_get(jax.tree.map(jnp.mean, stacked_val_losses))
+            pbar.write(f"Step {step}: val_loss={mean_val_loss['val_loss']:.4f}")
+            wandb.log(mean_val_loss, step=step)
+
+        # Fetch next batch for training
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            logging.info("Data loader reached end, restarting from beginning")
+            data_iter = iter(data_loader)
+            batch = next(data_iter)
+
+        # if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
+        #     _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
