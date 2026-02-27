@@ -13,12 +13,13 @@ import json
 import logging
 from pathlib import Path
 
-import numpy as np
 import tqdm
 
 import openpi.shared.download as download
 
 DEFAULT_SHUFFLE_BUFFER_SIZE: int = 250_000
+
+
 class DroidActionSpace(Enum):
     """Action space for DROID dataset."""
 
@@ -106,12 +107,12 @@ class DroidRldsDataset:
                             frame_key = f"{episode_key}--{t}"
                             keys_tensor.append(frame_key)
                             values_tensor.append(True)
-                self.filter_table = tf.lookup.StaticHashTable(
+                filter_table = tf.lookup.StaticHashTable(
                     tf.lookup.KeyValueTensorInitializer(keys_tensor, values_tensor), default_value=False
                 )
                 logging.info("Filter hash table initialized")
             else:
-                self.filter_table = tf.lookup.StaticHashTable(
+                filter_table = tf.lookup.StaticHashTable(
                     tf.lookup.KeyValueTensorInitializer([""], [True]), default_value=True
                 )
 
@@ -156,7 +157,7 @@ class DroidRldsDataset:
                     + "--"
                     + indices
                 )
-                passes_filter = self.filter_table.lookup(step_id)
+                passes_filter = filter_table.lookup(step_id)
 
                 return {
                     "actions": actions,
@@ -233,56 +234,12 @@ class DroidRldsDataset:
         weights = [dataset.weight for dataset in datasets]
 
         final_dataset = dl.DLataset.sample_from_datasets(all_datasets, weights=weights)
-        
-        # if episode_aware_sampling:
-        #     # Maintain per-episode sampling probability that decays when a frame is sampled
-        #     # This increases diversity by spreading sampled frames across different episodes
-        #     logging.info("Using episode-aware sampling for better shuffle diversity")
-        #     episode_probs = {}  # episode_id -> current sampling probability
-        #     episode_locks = {}
-        #     import threading
-        #     global_lock = threading.Lock()
-            
-        #     decay_rate = 0.3  # Probability multiplier after a frame is sampled
-        #     recovery_rate = 1.2  # Probability multiplier when a frame is skipped
-            
-        #     def get_episode_state(episode_id: str):
-        #         with global_lock:
-        #             if episode_id not in episode_probs:
-        #                 episode_probs[episode_id] = 1.0
-        #                 episode_locks[episode_id] = threading.Lock()
-        #             return episode_probs[episode_id], episode_locks[episode_id]
-            
-        #     def sample_frame(step_id_bytes):
-        #         step_id = step_id_bytes.numpy().decode('utf-8')
-        #         # Extract episode_id from step_id (format: "recording_path--file_path--index")
-        #         parts = step_id.rsplit('--', 1)
-        #         episode_id = parts[0] if len(parts) > 1 else step_id
-                
-        #         current_prob, lock = get_episode_state(episode_id)
-                
-        #         with lock:
-        #             should_sample = np.random.random() < current_prob
-        #             if should_sample:
-        #                 # Decay probability for future frames in this episode
-        #                 episode_probs[episode_id] = max(0.05, current_prob * decay_rate)
-        #             else:
-        #                 # Slowly recover probability when frames are skipped
-        #                 episode_probs[episode_id] = min(1.0, current_prob * recovery_rate)
-                
-        #         return should_sample
-            
-        #     def episode_aware_filter(frame):
-        #         return tf.py_function(sample_frame, [frame["step_id"]], tf.bool)
-            
-        #     final_dataset = final_dataset.filter(episode_aware_filter)
-        # else:
-        #     final_dataset = final_dataset.filter(lambda _: tf.random.uniform(shape=[]) > 0.5)
+
         if prefilter:
             final_dataset = final_dataset.filter(lambda _: tf.random.uniform(shape=[]) > 0.5)
         else:
             logging.info("Not using prefiltering.")
-        
+
         final_dataset = final_dataset.shuffle(shuffle_buffer_size)
         final_dataset = final_dataset.batch(batch_size)
         # Note =>> Seems to reduce memory usage without affecting speed?
