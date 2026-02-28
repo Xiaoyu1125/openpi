@@ -912,7 +912,7 @@ _CONFIGS = [
         data=RLDSDroidDataConfig(
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
-            rlds_data_dir="/public/xiaoyu/",
+            rlds_data_dir="<path_to_droid_rlds_dataset>",
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
             # Reserve the last 5% of DROID episodes as a held-out validation split.
             datasets=(
@@ -927,7 +927,7 @@ _CONFIGS = [
         ),
         val_data=RLDSDroidDataConfig(
             repo_id="droid",
-            rlds_data_dir="/public/xiaoyu/",
+            rlds_data_dir="<path_to_droid_rlds_dataset>",
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
             # Held-out 5% of DROID episodes for validation (no frame-level filter needed).
             datasets=(
@@ -970,7 +970,7 @@ _CONFIGS = [
         data=RLDSDroidDataConfig(
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
-            rlds_data_dir="/public/xiaoyu/",
+            rlds_data_dir="<path_to_droid_rlds_dataset>",
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
             assets=AssetsConfig(
                 assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets/",
@@ -989,7 +989,7 @@ _CONFIGS = [
         ),
         val_data=RLDSDroidDataConfig(
             repo_id="droid",
-            rlds_data_dir="/public/xiaoyu/",
+            rlds_data_dir="<path_to_droid_rlds_dataset>",
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
             assets=AssetsConfig(
                 assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets/",

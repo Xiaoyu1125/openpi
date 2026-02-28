@@ -268,9 +268,9 @@ def main(config: _config.TrainConfig):
                 num_batches=config.num_val_batches,
             )
             try:
+                val_iter = iter(val_data_loader)
                 for i in range(config.num_val_batches):
-                    val_batch = next(iter(val_data_loader))
-                    val_batches.append(val_batch)
+                    val_batches.append(next(val_iter))
             except StopIteration:
                 logging.warning(f"Could only load {len(val_batches)} validation batches out of {config.num_val_batches}")
             logging.info(f"Preloaded {len(val_batches)} validation batches")
@@ -315,7 +315,7 @@ def main(config: _config.TrainConfig):
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
         infos.append(info)
-        
+
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
@@ -348,8 +348,8 @@ def main(config: _config.TrainConfig):
             data_iter = iter(data_loader)
             batch = next(data_iter)
 
-        # if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
-        #     _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
+            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
