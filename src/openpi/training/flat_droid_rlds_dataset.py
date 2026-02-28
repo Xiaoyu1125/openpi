@@ -51,13 +51,16 @@ class FlatDroidDataset:
         # 3. 定义解析结构 (Feature Spec)
         # 这必须与 Step 1 序列化时的结构严格对应
         self.feature_description = {
-            "observation/image": tf.io.FixedLenFeature([], tf.string),
+            "observation/exterior_image_1_left": tf.io.FixedLenFeature([], tf.string),
+            "observation/exterior_image_2_left": tf.io.FixedLenFeature([], tf.string),
             "observation/wrist_image": tf.io.FixedLenFeature([], tf.string),
             "observation/joint_position": tf.io.FixedLenFeature([7], tf.float32),
             "observation/gripper_position": tf.io.FixedLenFeature([1], tf.float32),
-            # Actions 在 step 1 中被 flatten 成了一维，长度为 chunk_size * 8
-            "actions": tf.io.FixedLenFeature([self.action_chunk_size * 8], tf.float32),
-            "prompt": tf.io.FixedLenFeature([], tf.string),
+            # Actions now uses a variable length feature so any chunk size requested at runtime will work.
+            "actions": tf.io.VarLenFeature(tf.float32),
+            "prompt_1": tf.io.FixedLenFeature([], tf.string),
+            "prompt_2": tf.io.FixedLenFeature([], tf.string),
+            "prompt_3": tf.io.FixedLenFeature([], tf.string),
             "step_id": tf.io.FixedLenFeature([], tf.string),
         }
 
@@ -66,16 +69,30 @@ class FlatDroidDataset:
             # 解析二进制 Protobuf
             parsed = tf.io.parse_single_example(example_proto, self.feature_description)
             
+            # Dynamically select exterior image with 50% probability
+            exterior_img_bytes = tf.cond(
+                tf.random.uniform(shape=[]) > 0.5,
+                lambda: parsed["observation/exterior_image_1_left"],
+                lambda: parsed["observation/exterior_image_2_left"],
+            )
+            
             # 解码图片 (延迟到此处解码以优化存储和 IO)
             image = tf.io.decode_image(
-                parsed["observation/image"], expand_animations=False, dtype=tf.uint8
+                exterior_img_bytes, expand_animations=False, dtype=tf.uint8
             )
             wrist_image = tf.io.decode_image(
                 parsed["observation/wrist_image"], expand_animations=False, dtype=tf.uint8
             )
             
-            # 将打平的 actions 恢复为 (chunk_size, 8) 的二维矩阵
-            actions = tf.reshape(parsed["actions"], [self.action_chunk_size, 8])
+            # Dynamically select random prompt
+            instruction = tf.random.shuffle(
+                [parsed["prompt_1"], parsed["prompt_2"], parsed["prompt_3"]]
+            )[0]
+            
+            # 将打平的 actions (变长) 恢复并截断到当前配置的 action_chunk_size
+            actions_flat = parsed["actions"].values
+            actions_2d = tf.reshape(actions_flat, [-1, 8])
+            actions = actions_2d[:self.action_chunk_size]
 
             # 重组为 OpenPI 训练框架期望的字典结构
             return {
@@ -86,7 +103,7 @@ class FlatDroidDataset:
                     "joint_position": parsed["observation/joint_position"],
                     "gripper_position": parsed["observation/gripper_position"],
                 },
-                "prompt": parsed["prompt"],
+                "prompt": instruction,
                 "step_id": parsed["step_id"],
             }
 

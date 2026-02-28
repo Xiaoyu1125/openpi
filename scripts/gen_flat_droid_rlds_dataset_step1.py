@@ -211,16 +211,13 @@ def build_dataset_pipeline(
             axis=-1,
         )
         # Randomly samples one of the two exterior images
-        exterior_img = tf.cond(
-            tf.random.uniform(shape=[]) > 0.5,
-            lambda: traj["observation"]["exterior_image_1_left"],
-            lambda: traj["observation"]["exterior_image_2_left"],
-        )
+        exterior_image_1_left = traj["observation"]["exterior_image_1_left"]
+        exterior_image_2_left = traj["observation"]["exterior_image_2_left"]
         wrist_img = traj["observation"]["wrist_image_left"]
-        # Randomly sample one of the three language instructions
-        instruction = tf.random.shuffle(
-            [traj["language_instruction"], traj["language_instruction_2"], traj["language_instruction_3"]]
-        )[0]
+        
+        instruction_1 = traj["language_instruction"]
+        instruction_2 = traj["language_instruction_2"]
+        instruction_3 = traj["language_instruction_3"]
 
         # Use action len to determine trajectory length
         # Note: Original used traj["action"] but restructure creates "actions". 
@@ -240,12 +237,15 @@ def build_dataset_pipeline(
         return {
             "actions": actions,
             "observation": {
-                "image": exterior_img,
+                "exterior_image_1_left": exterior_image_1_left,
+                "exterior_image_2_left": exterior_image_2_left,
                 "wrist_image": wrist_img,
                 "joint_position": traj["observation"]["joint_position"],
                 "gripper_position": traj["observation"]["gripper_position"],
             },
-            "prompt": instruction,
+            "prompt_1": instruction_1,
+            "prompt_2": instruction_2,
+            "prompt_3": instruction_3,
             "step_id": step_id,
             "passes_filter": passes_filter,
         }
